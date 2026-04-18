@@ -112,7 +112,7 @@ def get_universe_returns(df: pd.DataFrame, universe: str) -> pd.DataFrame:
 
     ret_cols = [f"{t}_ret" for t in tickers if f"{t}_ret" in df.columns]
     returns_df = df[ret_cols].copy()
-    returns_df = returns_df.fillna(method='ffill').dropna()
+    returns_df = returns_df.ffill().dropna()
     return returns_df
 
 
@@ -120,5 +120,5 @@ def get_macro_sequence(df: pd.DataFrame) -> pd.DataFrame:
     """Extract and normalize macro feature sequence."""
     available_macro = [m for m in config.MACRO_FEATURES if m in df.columns]
     macro_df = df[available_macro].copy()
-    macro_df = macro_df.fillna(method='ffill').dropna()
+    macro_df = macro_df.ffill().dropna()
     return macro_df
