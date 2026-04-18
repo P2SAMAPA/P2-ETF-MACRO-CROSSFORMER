@@ -287,8 +287,18 @@ def run_training():
         returns = get_universe_returns(df, universe)
         if returns.empty:
             continue
-        global_res = train_global(universe, returns, macro_df)
-        adaptive_res = train_adaptive(universe, returns, macro_df)
+
+        # Align returns and macro_df on common index
+        common_idx = returns.index.intersection(macro_df.index)
+        returns_aligned = returns.loc[common_idx]
+        macro_aligned = macro_df.loc[common_idx]
+
+        if len(returns_aligned) < config.MIN_TRAIN_DAYS:
+            print(f"  Insufficient aligned data for {universe}, skipping.")
+            continue
+
+        global_res = train_global(universe, returns_aligned, macro_aligned)
+        adaptive_res = train_adaptive(universe, returns_aligned, macro_aligned)
         all_results[universe] = {"global": global_res, "adaptive": adaptive_res}
     return all_results
 
