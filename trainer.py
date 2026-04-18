@@ -107,6 +107,11 @@ def train_global(universe: str, returns: pd.DataFrame, macro_df: pd.DataFrame) -
     train_end = int(total_days * config.TRAIN_RATIO)
     val_end = train_end + int(total_days * config.VAL_RATIO)
 
+    # Ensure validation set is non‑empty
+    if val_end <= train_end:
+        train_end = int(total_days * 0.7)
+        val_end = int(total_days * 0.8)
+
     train_ret = returns.iloc[:train_end]
     val_ret = returns.iloc[train_end:val_end]
     test_ret = returns.iloc[val_end:]
@@ -115,15 +120,34 @@ def train_global(universe: str, returns: pd.DataFrame, macro_df: pd.DataFrame) -
     val_macro = macro_df.iloc[train_end:val_end]
     test_macro = macro_df.iloc[val_end:]
 
+    if len(val_ret) < 5:
+        print("  Validation set too small; merging train and val.")
+        train_ret = pd.concat([train_ret, val_ret])
+        train_macro = pd.concat([train_macro, val_macro])
+        val_ret = test_ret.iloc[:len(test_ret)//2]
+        val_macro = test_macro.iloc[:len(test_macro)//2]
+        test_ret = test_ret.iloc[len(val_ret):]
+        test_macro = test_macro.iloc[len(val_ret):]
+
     # Scale macro features
     scaler = StandardScaler()
     train_macro_scaled = scaler.fit_transform(train_macro)
-    val_macro_scaled = scaler.transform(val_macro)
-    test_macro_scaled = scaler.transform(test_macro)
+    val_macro_scaled = scaler.transform(val_macro) if len(val_macro) > 0 else np.empty((0, len(config.MACRO_FEATURES)))
+    test_macro_scaled = scaler.transform(test_macro) if len(test_macro) > 0 else np.empty((0, len(config.MACRO_FEATURES)))
 
     X_train, y_train = create_sequences(pd.DataFrame(train_macro_scaled), train_ret, config.LOOKBACK_WINDOW)
-    X_val, y_val = create_sequences(pd.DataFrame(val_macro_scaled), val_ret, config.LOOKBACK_WINDOW)
-    X_test, _ = create_sequences(pd.DataFrame(test_macro_scaled), test_ret, config.LOOKBACK_WINDOW)
+    X_val, y_val = create_sequences(pd.DataFrame(val_macro_scaled), val_ret, config.LOOKBACK_WINDOW) if len(val_ret) > config.LOOKBACK_WINDOW else (np.empty((0, config.LOOKBACK_WINDOW, len(config.MACRO_FEATURES))), np.empty((0, len(tickers))))
+    X_test, _ = create_sequences(pd.DataFrame(test_macro_scaled), test_ret, config.LOOKBACK_WINDOW) if len(test_ret) > config.LOOKBACK_WINDOW else (np.empty((0, config.LOOKBACK_WINDOW, len(config.MACRO_FEATURES))), np.empty((0, len(tickers))))
+
+    if len(X_train) == 0:
+        print("  No training sequences available. Skipping.")
+        return {"ticker": None, "metrics": {}}
+
+    if len(X_val) == 0:
+        # Use a portion of training as validation
+        split = max(1, int(len(X_train) * 0.2))
+        X_val, y_val = X_train[-split:], y_train[-split:]
+        X_train, y_train = X_train[:-split], y_train[:-split]
 
     train_dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.float32))
     val_dataset = TensorDataset(torch.tensor(X_val, dtype=torch.float32), torch.tensor(y_val, dtype=torch.float32))
@@ -145,23 +169,27 @@ def train_global(universe: str, returns: pd.DataFrame, macro_df: pd.DataFrame) -
 
     model.eval()
     with torch.no_grad():
-        X_test_t = torch.tensor(X_test[-1:], dtype=torch.float32).to(config.DEVICE)
-        pred_returns = model(X_test_t).cpu().numpy().squeeze()
+        if len(X_test) > 0:
+            X_test_t = torch.tensor(X_test[-1:], dtype=torch.float32).to(config.DEVICE)
+            pred_returns = model(X_test_t).cpu().numpy().squeeze()
+        else:
+            X_train_t = torch.tensor(X_train[-1:], dtype=torch.float32).to(config.DEVICE)
+            pred_returns = model(X_train_t).cpu().numpy().squeeze()
 
     best_idx = np.argmax(pred_returns)
     best_ticker = tickers[best_idx]
     pred_return = float(pred_returns[best_idx])
     all_pred_returns = {tickers[i]: float(pred_returns[i]) for i in range(len(tickers))}
 
-    metrics = evaluate_etf(best_ticker, test_ret)
+    metrics = evaluate_etf(best_ticker, test_ret) if len(test_ret) > 0 else {}
     print(f"  Selected ETF: {best_ticker}, Predicted Return: {pred_return*100:.2f}%")
     return {
         "ticker": best_ticker,
         "pred_return": pred_return,
         "all_pred_returns": all_pred_returns,
         "metrics": metrics,
-        "test_start": test_ret.index[0].strftime("%Y-%m-%d"),
-        "test_end": test_ret.index[-1].strftime("%Y-%m-%d"),
+        "test_start": test_ret.index[0].strftime("%Y-%m-%d") if len(test_ret) else "",
+        "test_end": test_ret.index[-1].strftime("%Y-%m-%d") if len(test_ret) else "",
     }
 
 
@@ -187,10 +215,14 @@ def train_adaptive(universe: str, returns: pd.DataFrame, macro_df: pd.DataFrame)
 
     scaler = StandardScaler()
     train_macro_scaled = scaler.fit_transform(train_macro)
-    test_macro_scaled = scaler.transform(test_macro)
+    test_macro_scaled = scaler.transform(test_macro) if len(test_macro) > 0 else np.empty((0, len(config.MACRO_FEATURES)))
 
     X_train, y_train = create_sequences(pd.DataFrame(train_macro_scaled), train_ret, config.LOOKBACK_WINDOW)
-    X_test, _ = create_sequences(pd.DataFrame(test_macro_scaled), test_ret, config.LOOKBACK_WINDOW)
+    X_test, _ = create_sequences(pd.DataFrame(test_macro_scaled), test_ret, config.LOOKBACK_WINDOW) if len(test_ret) > config.LOOKBACK_WINDOW else (np.empty((0, config.LOOKBACK_WINDOW, len(config.MACRO_FEATURES))), np.empty((0, len(tickers))))
+
+    if len(X_train) == 0:
+        print("  No training sequences. Falling back to global.")
+        return train_global(universe, returns, macro_df)
 
     val_size = max(10, int(len(X_train) * 0.2))
     X_val, y_val = X_train[-val_size:], y_train[-val_size:]
@@ -216,8 +248,12 @@ def train_adaptive(universe: str, returns: pd.DataFrame, macro_df: pd.DataFrame)
 
     model.eval()
     with torch.no_grad():
-        X_test_t = torch.tensor(X_test[-1:], dtype=torch.float32).to(config.DEVICE)
-        pred_returns = model(X_test_t).cpu().numpy().squeeze()
+        if len(X_test) > 0:
+            X_test_t = torch.tensor(X_test[-1:], dtype=torch.float32).to(config.DEVICE)
+            pred_returns = model(X_test_t).cpu().numpy().squeeze()
+        else:
+            X_train_t = torch.tensor(X_train[-1:], dtype=torch.float32).to(config.DEVICE)
+            pred_returns = model(X_train_t).cpu().numpy().squeeze()
 
     best_idx = np.argmax(pred_returns)
     best_ticker = tickers[best_idx]
