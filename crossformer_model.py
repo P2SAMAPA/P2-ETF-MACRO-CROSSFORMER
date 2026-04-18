@@ -67,7 +67,7 @@ class TwoStageAttentionLayer(nn.Module):
         x_time, _ = self.time_attn(x_time, x_time, x_time)
         x = x_time.reshape(batch, n_vars, d_model, n_segments).permute(0, 1, 3, 2)
 
-        # Cross-Dimension Stage: use routers to reduce complexity from O(D^2) to O(D)
+        # Cross-Dimension Stage: use routers to reduce complexity
         x_dim = x.permute(0, 2, 1, 3).reshape(batch * n_segments, n_vars, d_model)
         routers = self.router.expand(batch * n_segments, -1, -1)
         router_out, _ = self.time_attn(routers, x_dim, x_dim)
@@ -117,8 +117,10 @@ class CrossformerETF(nn.Module):
     def __init__(self, n_vars, seg_len, d_model, n_heads, n_layers, n_etfs, dropout=0.1):
         super().__init__()
         self.n_vars = n_vars
+        self.d_model = d_model
         self.encoder = CrossformerEncoder(seg_len, d_model, n_heads, n_layers, dropout)
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        # Predictor input dimension is d_model
         self.predictor = nn.Sequential(
             nn.Linear(d_model, d_model // 2),
             nn.ReLU(),
@@ -129,7 +131,8 @@ class CrossformerETF(nn.Module):
     def forward(self, x):
         # x: [batch, seq_len, n_vars]
         enc = self.encoder(x)              # [batch, n_vars, n_segments, d_model]
-        pooled = self.pool(enc).squeeze(-1).squeeze(-1)  # [batch, n_vars, d_model]
+        pooled = self.pool(enc)            # [batch, n_vars, 1, d_model]
+        pooled = pooled.squeeze(-2)        # [batch, n_vars, d_model]
         pooled = pooled.mean(dim=1)        # [batch, d_model]
         pred = self.predictor(pooled)      # [batch, n_etfs]
         return pred
