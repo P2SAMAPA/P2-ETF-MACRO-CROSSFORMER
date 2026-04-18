@@ -119,7 +119,6 @@ class CrossformerETF(nn.Module):
         self.n_vars = n_vars
         self.d_model = d_model
         self.encoder = CrossformerEncoder(seg_len, d_model, n_heads, n_layers, dropout)
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
         # Predictor input dimension is d_model
         self.predictor = nn.Sequential(
             nn.Linear(d_model, d_model // 2),
@@ -131,8 +130,9 @@ class CrossformerETF(nn.Module):
     def forward(self, x):
         # x: [batch, seq_len, n_vars]
         enc = self.encoder(x)              # [batch, n_vars, n_segments, d_model]
-        pooled = self.pool(enc)            # [batch, n_vars, 1, d_model]
-        pooled = pooled.squeeze(-2)        # [batch, n_vars, d_model]
+        # Average over n_segments dimension (dim=2)
+        pooled = enc.mean(dim=2)           # [batch, n_vars, d_model]
+        # Average over n_vars dimension (dim=1)
         pooled = pooled.mean(dim=1)        # [batch, d_model]
         pred = self.predictor(pooled)      # [batch, n_etfs]
         return pred
